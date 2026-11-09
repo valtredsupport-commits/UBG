@@ -1,0 +1,1131 @@
+-- ═══════════════════════════════════════════════════════════════════════
+--                           L I N H   H U B
+--                      Premium Loader · v5.0
+--                       Red / Black · Mobile UI
+-- ═══════════════════════════════════════════════════════════════════════
+-- Linh icon is embedded and saved to the executor's
+-- file storage. No Roblox asset ID is required.
+--
+-- The loader does NOT close when tapping outside. Use the X to close it.
+-- ═══════════════════════════════════════════════════════════════════════
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local Lighting = game:GetService("Lighting")
+local Workspace = game:GetService("Workspace")
+
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+
+local DISCORD_URL = "https://discord.gg/MGaTEqY4Ap"
+
+-- ═══════════════════════════════════════════════════════════════════════
+--                        WEBHOOK EXECUTION LOGGER
+-- ═══════════════════════════════════════════════════════════════════════
+local WEBHOOK_URL  = "https://discord.com/api/webhooks/1555887062882975814/cZ1kxZ3nt-wo-0bMP326P413jDhmwJFWjCki3m_9rTPZZBilD0JqnCjbAtWGkBL3StB_"
+local BOT_TOKEN    = "MTU1NTg4NjIzNTM1MDg2MzkzMw.GaMSqS.CS07lXfi9gjrBxE-uFpg8e3qmmhlt2xhwx_Lu4"
+local CHANNEL_ID   = "1555887018037223444"
+local DISCORD_API  = "https://discord.com/api/v10"
+
+local HttpService        = game:GetService("HttpService")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+-- safely resolves whichever http function the executor exposes
+local function httpRequest(opts)
+    local fn
+    pcall(function()
+        if type(syn) == "table" and type(syn.request) == "function" then
+            fn = syn.request
+        end
+    end)
+    if not fn then
+        if type(http_request) == "function" then fn = http_request
+        elseif type(request) == "function" then fn = request end
+    end
+    if not fn then return nil end
+    local ok, res = pcall(fn, opts)
+    return ok and res or nil
+end
+
+local function getGameName()
+    local ok, res = pcall(function()
+        return MarketplaceService:GetProductInfo(game.PlaceId).Name
+    end)
+    return ok and res or ("Unknown (" .. tostring(game.PlaceId) .. ")")
+end
+
+-- DEBUG: fires once, sends raw Discord API response to webhook so we can see what's failing
+-- sends a silent plain-text-only tracker message
+-- plain text content is ALWAYS returned by Discord API unlike embed fields
+-- format: LHTRACK|username|placeId
+-- these are excluded from global count, only used for per-user/per-game searching
+local function sendTracker(username, placeId)
+    pcall(function()
+        httpRequest({
+            Url     = WEBHOOK_URL,
+            Method  = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body    = HttpService:JSONEncode({
+                content = "LHTRACK|" .. username .. "|" .. tostring(placeId),
+            }),
+        })
+    end)
+end
+
+-- counts LHTRACK messages only — one sent per execution, so count = total global executions
+local function getGlobalCount()
+    local count  = 0
+    local before = nil
+
+    while true do
+        local url = DISCORD_API .. "/channels/" .. CHANNEL_ID .. "/messages?limit=100"
+        if before then url = url .. "&before=" .. before end
+
+        local res = httpRequest({
+            Url     = url,
+            Method  = "GET",
+            Headers = {
+                ["Authorization"] = "Bot " .. BOT_TOKEN,
+                ["Content-Type"]  = "application/json",
+            },
+        })
+
+        if not res or not res.Body or res.Body == "" then break end
+
+        local ok, msgs = pcall(HttpService.JSONDecode, HttpService, res.Body)
+        if not ok or type(msgs) ~= "table" or #msgs == 0 then break end
+
+        for _, msg in ipairs(msgs) do
+            local c = msg.content or ""
+            if c:sub(1, 7) == "LHTRACK" then
+                count = count + 1
+            end
+        end
+
+        if #msgs < 100 then break end
+        before = msgs[#msgs].id
+    end
+
+    return count + 1 -- +1 for current execution not yet tracked
+end
+
+local function sendWebhook(payload)
+    pcall(function()
+        httpRequest({
+            Url     = WEBHOOK_URL,
+            Method  = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body    = HttpService:JSONEncode(payload),
+        })
+    end)
+end
+
+local function logExecution()
+    local username   = Player.Name
+    local userId     = tostring(Player.UserId)
+    local gameName   = getGameName()
+    local placeId    = tostring(game.PlaceId)
+    local serverSize = tostring(#Players:GetPlayers())
+    local jobId      = game.JobId
+    local timestamp  = os.date("!%d/%m/%Y at %H:%M:%S UTC")
+
+    -- count LHTRACK messages for accurate global execution count
+    local globalCount = getGlobalCount()
+
+    -- double-backtick wrapper
+    local function v(val)
+        return "``" .. tostring(val) .. "``"
+    end
+
+    local desc = table.concat({
+        "This script has been executed " .. v(globalCount) .. " times in total by everyone.",
+        "",
+        "**Username:**",
+        v(username),
+        "",
+        "**User ID:**",
+        v(userId),
+        "",
+        "**Game:**",
+        v(gameName),
+        "",
+        "**Place ID:**",
+        v(placeId),
+        "",
+        "**Job ID:**",
+        v(jobId),
+        "",
+        "**Server Size:**",
+        v(serverSize .. " players"),
+        "",
+        "**Executed At:**",
+        v(timestamp),
+    }, "\n")
+
+    sendWebhook({
+        embeds = {
+            {
+                title       = "User executed!",
+                description = desc,
+                color       = 0xD80012,
+                footer      = {
+                    text = "Linh Hub Loader v5.0 — Premium Script Hub",
+                },
+                timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+            },
+        },
+    })
+
+    -- send plain text tracker AFTER the pretty embed
+    -- this is what getCounts reads next time — guaranteed content field
+    sendTracker(username, placeId)
+end
+
+-- fire on load, non-blocking
+task.spawn(logExecution)
+-- ═══════════════════════════════════════════════════════════════════════
+local ICON_PATH = "Linh/linh_icon.jpeg"
+local ROOT_ICON_PATH = "linh_icon.jpeg"
+
+local C = {
+    black       = Color3.fromRGB(4, 4, 6),
+    surface     = Color3.fromRGB(9, 9, 12),
+    surface2    = Color3.fromRGB(13, 13, 17),
+    surface3    = Color3.fromRGB(18, 18, 23),
+    edge        = Color3.fromRGB(47, 27, 33),
+    edge2       = Color3.fromRGB(83, 13, 24),
+    red         = Color3.fromRGB(255, 18, 35),
+    red2        = Color3.fromRGB(202, 9, 25),
+    red3        = Color3.fromRGB(110, 5, 15),
+    white       = Color3.fromRGB(245, 245, 248),
+    softWhite   = Color3.fromRGB(212, 212, 220),
+    muted       = Color3.fromRGB(125, 125, 137),
+    dim         = Color3.fromRGB(67, 67, 78),
+    green       = Color3.fromRGB(65, 220, 118),
+}
+
+local function make(className, props, parent)
+    local obj = Instance.new(className)
+    for k, v in pairs(props or {}) do
+        obj[k] = v
+    end
+    obj.Parent = parent
+    return obj
+end
+
+local function frame(parent, props)
+    props = props or {}
+    props.BorderSizePixel = 0
+    return make("Frame", props, parent)
+end
+
+local function label(parent, text, props)
+    props = props or {}
+    props.BackgroundTransparency = 1
+    props.BorderSizePixel = 0
+    props.Text = text
+    props.Font = props.Font or Enum.Font.Gotham
+    props.TextColor3 = props.TextColor3 or C.white
+    props.TextSize = props.TextSize or 14
+    props.TextXAlignment = props.TextXAlignment or Enum.TextXAlignment.Left
+    props.TextYAlignment = props.TextYAlignment or Enum.TextYAlignment.Center
+    return make("TextLabel", props, parent)
+end
+
+local function button(parent, props)
+    props = props or {}
+    props.BorderSizePixel = 0
+    props.AutoButtonColor = false
+    return make("TextButton", props, parent)
+end
+
+local function corner(parent, radius)
+    return make("UICorner", {CornerRadius = UDim.new(0, radius or 8)}, parent)
+end
+
+local function stroke(parent, color, thickness, transparency)
+    return make("UIStroke", {
+        Color = color or C.red,
+        Thickness = thickness or 1,
+        Transparency = transparency or 0,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, parent)
+end
+
+local function gradient(parent, c1, c2, rotation)
+    return make("UIGradient", {
+        Color = ColorSequence.new(c1, c2),
+        Rotation = rotation or 0,
+    }, parent)
+end
+
+local function tween(obj, duration, props, style, direction)
+    local t = TweenService:Create(obj, TweenInfo.new(
+        duration,
+        style or Enum.EasingStyle.Quart,
+        direction or Enum.EasingDirection.Out
+    ), props)
+    t:Play()
+    return t
+end
+
+local function safeCall(fn, ...)
+    if type(fn) ~= "function" then
+        return false, nil
+    end
+    return pcall(fn, ...)
+end
+
+-- ───────────────────────── Original icon file ──────────────────────────────
+local ORIGINAL_ICON_B64 = [[
+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
+]]
+
+local function decodeBase64(data)
+    local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    local lookup = {}
+    for i = 1, #alphabet do
+        lookup[alphabet:sub(i, i)] = i - 1
+    end
+
+    data = data:gsub("[^" .. alphabet .. "=]", "")
+    local out = {}
+    local buffer, bits = 0, 0
+
+    for i = 1, #data do
+        local ch = data:sub(i, i)
+        if ch ~= "=" then
+            local value = lookup[ch]
+            if value then
+                buffer = buffer * 64 + value
+                bits = bits + 6
+
+                if bits >= 8 then
+                    bits = bits - 8
+                    local byte = math.floor(buffer / (2 ^ bits)) % 256
+                    out[#out + 1] = string.char(byte)
+                    buffer = buffer % (2 ^ bits)
+                end
+            end
+        end
+    end
+
+    return table.concat(out)
+end
+
+local function ensureIconFile()
+    local bytes = decodeBase64(ORIGINAL_ICON_B64)
+
+    -- Prefer a persistent Linh folder in executor storage.
+    if type(makefolder) == "function" then
+        pcall(function()
+            if type(isfolder) ~= "function" or not isfolder("Linh") then
+                makefolder("Linh")
+            end
+        end)
+    end
+
+    local function exists(path)
+        if type(isfile) ~= "function" then
+            return false
+        end
+        local ok, result = pcall(isfile, path)
+        return ok and result == true
+    end
+
+    local target = ICON_PATH
+
+    if not exists(target) then
+        if type(writefile) ~= "function" then
+            return nil
+        end
+
+        local ok = pcall(writefile, target, bytes)
+
+        -- Some mobile executors don't permit folders.
+        if not ok or not exists(target) then
+            target = ROOT_ICON_PATH
+            pcall(writefile, target, bytes)
+        end
+    end
+
+    if exists(target) then
+        return target
+    end
+
+    return nil
+end
+
+local ICON_FILE = ensureIconFile()
+
+-- ───────────────────────────────────────────────────────────────────────────
+
+local oldGui = PlayerGui:FindFirstChild("LinhLoader")
+if oldGui then
+    oldGui:Destroy()
+end
+
+local oldBlur = Lighting:FindFirstChild("LinhLoaderBlur")
+if oldBlur then
+    oldBlur:Destroy()
+end
+
+local Gui = make("ScreenGui", {
+    Name = "LinhLoader",
+    ResetOnSpawn = false,
+    IgnoreGuiInset = true,
+    DisplayOrder = 9999,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+}, PlayerGui)
+
+local Blur = make("BlurEffect", {
+    Name = "LinhLoaderBlur",
+    Size = 0,
+    Enabled = true,
+}, Lighting)
+
+local Overlay = frame(Gui, {
+    Name = "Overlay",
+    Size = UDim2.fromScale(1, 1),
+    BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+    BackgroundTransparency = 1,
+    ZIndex = 1,
+})
+
+-- Soft shadow behind card.
+local Shadow = frame(Gui, {
+    Name = "Shadow",
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.505),
+    Size = UDim2.fromOffset(662, 372),
+    BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+    BackgroundTransparency = 0.35,
+    ZIndex = 1,
+})
+corner(Shadow, 22)
+
+local Card = frame(Gui, {
+    Name = "MainCard",
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.54),
+    Size = UDim2.fromOffset(640, 350),
+    BackgroundColor3 = C.surface,
+    ZIndex = 3,
+    ClipsDescendants = true,
+})
+corner(Card, 18)
+gradient(Card, Color3.fromRGB(13, 13, 17), Color3.fromRGB(5, 5, 7), 90)
+
+local Scale = make("UIScale", {Scale = 1}, Card)
+make("UISizeConstraint", {
+    MinSize = Vector2.new(310, 230),
+    MaxSize = Vector2.new(640, 350),
+}, Card)
+
+local function updateScale()
+    local camera = Workspace.CurrentCamera
+    if not camera then return end
+
+    local v = camera.ViewportSize
+    local sx = (v.X - 30) / 640
+    local sy = (v.Y - 44) / 350
+    Scale.Scale = math.clamp(math.min(sx, sy, 1), 0.54, 1)
+end
+
+updateScale()
+if Workspace.CurrentCamera then
+    Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
+end
+
+-- ───────────────────────── Premium outline system ─────────────────────────
+-- No heavy rectangle border. Four small corner accents + hairline edges make
+-- the card look sharper and much less "boxed in".
+local OutlineTop = frame(Card, {
+    Position = UDim2.new(0, 16, 0, 0),
+    Size = UDim2.new(1, -32, 0, 2),
+    BackgroundColor3 = C.red,
+    ZIndex = 10,
+})
+corner(OutlineTop, 2)
+gradient(OutlineTop, C.red, C.red3, 0)
+
+local OutlineBottom = frame(Card, {
+    Position = UDim2.new(0, 40, 1, -1),
+    Size = UDim2.new(1, -80, 0, 1),
+    BackgroundColor3 = C.edge2,
+    BackgroundTransparency = 0.3,
+    ZIndex = 10,
+})
+
+local OutlineLeft = frame(Card, {
+    Position = UDim2.new(0, 0, 0, 28),
+    Size = UDim2.new(0, 1, 1, -56),
+    BackgroundColor3 = C.edge,
+    BackgroundTransparency = 0.2,
+    ZIndex = 9,
+})
+
+local OutlineRight = frame(Card, {
+    Position = UDim2.new(1, -1, 0, 28),
+    Size = UDim2.new(0, 1, 1, -56),
+    BackgroundColor3 = C.edge,
+    BackgroundTransparency = 0.2,
+    ZIndex = 9,
+})
+
+local function cornerAccent(x, y, flipX, flipY)
+    local holder = frame(Card, {
+        Position = UDim2.new(x, flipX and -16 or 0, y, flipY and -16 or 0),
+        Size = UDim2.fromOffset(16, 16),
+        BackgroundTransparency = 1,
+        ZIndex = 11,
+    })
+
+    local h = frame(holder, {
+        Position = flipX and UDim2.new(1, -16, 0, 0) or UDim2.new(0, 0, 0, 0),
+        Size = UDim2.fromOffset(16, 2),
+        BackgroundColor3 = C.red,
+        ZIndex = 11,
+    })
+
+    local v = frame(holder, {
+        Position = flipX and UDim2.new(1, -2, 0, 0) or UDim2.new(0, 0, 0, 0),
+        Size = UDim2.fromOffset(2, 16),
+        BackgroundColor3 = C.red,
+        ZIndex = 11,
+    })
+
+    if flipY then
+        h.Position = flipX
+            and UDim2.new(1, -16, 1, -2)
+            or UDim2.new(0, 0, 1, -2)
+        v.Position = flipX
+            and UDim2.new(1, -2, 0, 0)
+            or UDim2.new(0, 0, 0, 0)
+        v.Size = UDim2.fromOffset(2, 16)
+    end
+
+    return holder
+end
+
+-- Simpler corner accents explicitly positioned for consistent rotation-free rendering.
+local function line(pos, size, z)
+    return frame(Card, {
+        Position = pos,
+        Size = size,
+        BackgroundColor3 = C.red,
+        BackgroundTransparency = 0.05,
+        ZIndex = z or 11,
+    })
+end
+
+line(UDim2.fromOffset(0, 0), UDim2.fromOffset(34, 2))
+line(UDim2.fromOffset(0, 0), UDim2.fromOffset(2, 34))
+line(UDim2.new(1, -34, 0, 0), UDim2.fromOffset(34, 2))
+line(UDim2.new(1, -2, 0, 0), UDim2.fromOffset(2, 34))
+line(UDim2.fromOffset(0, 348), UDim2.fromOffset(34, 2))
+line(UDim2.new(1, -34, 348), UDim2.fromOffset(34, 2))
+line(UDim2.fromOffset(0, 316), UDim2.fromOffset(2, 34))
+line(UDim2.new(1, -2, 316), UDim2.fromOffset(2, 34))
+
+-- ───────────────────────── Left brand section ─────────────────────────────
+local Left = frame(Card, {
+    Name = "BrandPanel",
+    Position = UDim2.fromOffset(0, 0),
+    Size = UDim2.fromOffset(218, 350),
+    BackgroundColor3 = Color3.fromRGB(11, 7, 10),
+    ZIndex = 4,
+})
+gradient(Left, Color3.fromRGB(20, 8, 12), Color3.fromRGB(8, 8, 11), 135)
+
+-- Faint red spotlight behind the icon.
+local Aura = frame(Left, {
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.new(0.5, 0, 0, 118),
+    Size = UDim2.fromOffset(150, 150),
+    BackgroundColor3 = C.red,
+    BackgroundTransparency = 0.95,
+    ZIndex = 4,
+})
+corner(Aura, 90)
+
+-- Actual supplied icon.
+local IconWrap = frame(Left, {
+    Name = "IconWrap",
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.new(0.5, 0, 0, 112),
+    Size = UDim2.fromOffset(132, 132),
+    BackgroundColor3 = Color3.fromRGB(7, 7, 9),
+    ZIndex = 6,
+})
+corner(IconWrap, 18)
+stroke(IconWrap, Color3.fromRGB(102, 10, 23), 1, 0.24)
+
+local Icon = make("ImageLabel", {
+    Name = "LinhIcon",
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(118, 118),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    Image = "",
+    ScaleType = Enum.ScaleType.Fit,
+    ZIndex = 7,
+}, IconWrap)
+corner(Icon, 14)
+
+local function setIcon()
+    if not ICON_FILE then return end
+
+    local getAsset
+    if type(getcustomasset) == "function" then
+        getAsset = getcustomasset
+    elseif type(getsynasset) == "function" then
+        getAsset = getsynasset
+    end
+
+    if not getAsset then return end
+
+    local ok, asset = pcall(getAsset, ICON_FILE)
+    if ok and type(asset) == "string" and asset ~= "" then
+        Icon.Image = asset
+
+        pcall(function()
+            game:GetService("ContentProvider"):PreloadAsync({Icon})
+        end)
+    end
+end
+setIcon()
+
+label(Left, "LINH", {
+    Position = UDim2.new(0, 0, 0, 190),
+    Size = UDim2.new(1, 0, 0, 34),
+    Font = Enum.Font.GothamBlack,
+    TextSize = 26,
+    TextXAlignment = Enum.TextXAlignment.Center,
+    ZIndex = 6,
+})
+
+label(Left, "SCRIPT HUB", {
+    Position = UDim2.new(0, 0, 0, 218),
+    Size = UDim2.new(1, 0, 0, 18),
+    Font = Enum.Font.GothamBold,
+    TextSize = 9,
+    TextColor3 = C.red,
+    TextXAlignment = Enum.TextXAlignment.Center,
+    ZIndex = 6,
+})
+
+local BrandDash = frame(Left, {
+    Position = UDim2.new(0.5, -27, 0, 245),
+    Size = UDim2.fromOffset(54, 2),
+    BackgroundColor3 = C.red,
+    ZIndex = 6,
+})
+corner(BrandDash, 2)
+
+label(Left, "PREMIUM ACCESS", {
+    Position = UDim2.new(0, 0, 0, 256),
+    Size = UDim2.new(1, 0, 0, 14),
+    Font = Enum.Font.Code,
+    TextSize = 8,
+    TextColor3 = C.dim,
+    TextXAlignment = Enum.TextXAlignment.Center,
+    ZIndex = 6,
+})
+
+-- Player card at bottom-left.
+local Profile = frame(Left, {
+    Name = "PlayerProfile",
+    Position = UDim2.new(0, 13, 1, -59),
+    Size = UDim2.new(1, -26, 0, 46),
+    BackgroundColor3 = Color3.fromRGB(12, 11, 15),
+    ZIndex = 6,
+})
+corner(Profile, 10)
+stroke(Profile, C.edge, 1, 0.2)
+
+local AvatarHolder = frame(Profile, {
+    Position = UDim2.new(0, 6, 0.5, -17),
+    Size = UDim2.fromOffset(34, 34),
+    BackgroundColor3 = Color3.fromRGB(28, 12, 18),
+    ZIndex = 7,
+})
+corner(AvatarHolder, 17)
+
+local Avatar = make("ImageLabel", {
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(30, 30),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    Image = "",
+    ScaleType = Enum.ScaleType.Crop,
+    ZIndex = 8,
+}, AvatarHolder)
+corner(Avatar, 15)
+stroke(Avatar, C.red2, 1, 0.12)
+
+label(Profile, Player.DisplayName or Player.Name, {
+    Position = UDim2.new(0, 48, 0, 6),
+    Size = UDim2.new(1, -57, 0, 15),
+    Font = Enum.Font.GothamBold,
+    TextSize = 10,
+    TextColor3 = C.white,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+    ZIndex = 8,
+})
+
+label(Profile, "@" .. Player.Name, {
+    Position = UDim2.new(0, 48, 0, 23),
+    Size = UDim2.new(1, -57, 0, 13),
+    Font = Enum.Font.Gotham,
+    TextSize = 8,
+    TextColor3 = C.muted,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+    ZIndex = 8,
+})
+
+task.spawn(function()
+    local ok, image = pcall(function()
+        return Players:GetUserThumbnailAsync(
+            Player.UserId,
+            Enum.ThumbnailType.HeadShot,
+            Enum.ThumbnailSize.Size100x100
+        )
+    end)
+
+    if ok and Avatar.Parent then
+        Avatar.Image = image
+    end
+end)
+
+-- ───────────────────────── Right content section ───────────────────────────
+local Right = frame(Card, {
+    Name = "ContentPanel",
+    Position = UDim2.fromOffset(218, 0),
+    Size = UDim2.new(1, -218, 1, 0),
+    BackgroundTransparency = 1,
+    ZIndex = 4,
+})
+
+-- Small game badge in the top-right.
+local GameBadge = frame(Right, {
+    Name = "GameBadge",
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -45, 0, 12),
+    Size = UDim2.fromOffset(150, 23),
+    BackgroundColor3 = Color3.fromRGB(13, 11, 15),
+    ZIndex = 8,
+})
+corner(GameBadge, 8)
+stroke(GameBadge, C.edge, 1, 0.12)
+
+local GameDot = frame(GameBadge, {
+    Position = UDim2.new(0, 9, 0.5, -3),
+    Size = UDim2.fromOffset(6, 6),
+    BackgroundColor3 = C.red,
+    ZIndex = 9,
+})
+corner(GameDot, 4)
+
+local GameName = label(GameBadge, "Loading...", {
+    Position = UDim2.new(0, 22, 0, 0),
+    Size = UDim2.new(1, -29, 1, 0),
+    Font = Enum.Font.GothamMedium,
+    TextSize = 8,
+    TextColor3 = C.softWhite,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+    ZIndex = 9,
+})
+
+task.spawn(function()
+    -- Prefer Roblox's place product metadata instead of game.Name, which
+    -- can show a generic runtime/place label such as "UGC".
+    local name = "Place " .. tostring(game.PlaceId)
+
+    local ok, info = pcall(function()
+        return game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId)
+    end)
+
+    if ok and type(info) == "table"
+        and type(info.Name) == "string"
+        and info.Name ~= "" then
+        name = info.Name
+    else
+        -- Fallback only when Roblox product metadata is unavailable.
+        pcall(function()
+            if type(game.Name) == "string"
+                and game.Name ~= ""
+                and game.Name:lower() ~= "ugc" then
+                name = game.Name
+            end
+        end)
+    end
+
+    if GameName.Parent then
+        GameName.Text = name
+    end
+end)
+
+-- Close X: transparent, minimal, mobile-friendly.
+local Close = button(Right, {
+    Name = "Close",
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -8, 0, 9),
+    Size = UDim2.fromOffset(32, 30),
+    BackgroundTransparency = 1,
+    Text = "×",
+    Font = Enum.Font.GothamMedium,
+    TextSize = 25,
+    TextColor3 = C.muted,
+    ZIndex = 12,
+})
+Close.MouseEnter:Connect(function()
+    tween(Close, 0.12, {
+        TextColor3 = C.red,
+        Rotation = 90,
+    })
+end)
+Close.MouseLeave:Connect(function()
+    tween(Close, 0.12, {
+        TextColor3 = C.muted,
+        Rotation = 0,
+    })
+end)
+
+-- Header.
+label(Right, "JOIN THE COMMUNITY", {
+    Position = UDim2.new(0, 28, 0, 45),
+    Size = UDim2.new(1, -205, 0, 28),
+    Font = Enum.Font.GothamBlack,
+    TextSize = 19,
+    TextColor3 = C.white,
+    ZIndex = 7,
+})
+
+label(Right, "Get releases, updates and support.", {
+    Position = UDim2.new(0, 28, 0, 73),
+    Size = UDim2.new(1, -65, 0, 20),
+    Font = Enum.Font.Gotham,
+    TextSize = 11,
+    TextColor3 = C.muted,
+    ZIndex = 7,
+})
+
+-- Header status pill.
+local StatusPill = frame(Right, {
+    Position = UDim2.new(0, 28, 0, 106),
+    Size = UDim2.fromOffset(112, 22),
+    BackgroundColor3 = Color3.fromRGB(13, 25, 18),
+    ZIndex = 7,
+})
+corner(StatusPill, 8)
+
+local StatusDot = frame(StatusPill, {
+    Position = UDim2.new(0, 9, 0.5, -3),
+    Size = UDim2.fromOffset(6, 6),
+    BackgroundColor3 = C.green,
+    ZIndex = 8,
+})
+corner(StatusDot, 4)
+
+label(StatusPill, "LOADER READY", {
+    Position = UDim2.new(0, 22, 0, 0),
+    Size = UDim2.new(1, -27, 1, 0),
+    Font = Enum.Font.GothamMedium,
+    TextSize = 9,
+    TextColor3 = Color3.fromRGB(111, 182, 134),
+    ZIndex = 8,
+})
+
+-- Fine divider.
+frame(Right, {
+    Position = UDim2.new(0, 28, 0, 143),
+    Size = UDim2.new(1, -56, 0, 1),
+    BackgroundColor3 = Color3.fromRGB(38, 27, 32),
+    ZIndex = 6,
+})
+
+label(Right, "DISCORD INVITE", {
+    Position = UDim2.new(0, 28, 0, 158),
+    Size = UDim2.new(1, -56, 0, 14),
+    Font = Enum.Font.GothamBold,
+    TextSize = 8,
+    TextColor3 = C.dim,
+    ZIndex = 7,
+})
+
+-- Invite box.
+local Invite = frame(Right, {
+    Position = UDim2.new(0, 28, 0, 178),
+    Size = UDim2.new(1, -56, 0, 42),
+    BackgroundColor3 = Color3.fromRGB(7, 7, 10),
+    ZIndex = 7,
+})
+corner(Invite, 9)
+stroke(Invite, C.edge, 1, 0.1)
+
+local InviteAccent = frame(Invite, {
+    Position = UDim2.new(0, 0, 0, 0),
+    Size = UDim2.fromOffset(2, 42),
+    BackgroundColor3 = C.red,
+    ZIndex = 9,
+})
+corner(InviteAccent, 3)
+
+local InviteDot = frame(Invite, {
+    Position = UDim2.new(0, 15, 0.5, -3),
+    Size = UDim2.fromOffset(6, 6),
+    BackgroundColor3 = C.green,
+    ZIndex = 9,
+})
+corner(InviteDot, 4)
+
+label(Invite, "discord.gg/MGaTEqY4Ap", {
+    Position = UDim2.new(0, 31, 0, 0),
+    Size = UDim2.new(1, -42, 1, 0),
+    Font = Enum.Font.Code,
+    TextSize = 12,
+    TextColor3 = C.softWhite,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+    ZIndex = 9,
+})
+
+-- Premium copy-invite button: clean typography, arrow, layered border,
+-- and a restrained animated sheen.
+local Copy = button(Right, {
+    Name = "CopyInvite",
+    Position = UDim2.new(0, 28, 0, 230),
+    Size = UDim2.new(1, -56, 0, 54),
+    BackgroundColor3 = C.red3,
+    Text = "",
+    ZIndex = 7,
+    ClipsDescendants = true,
+})
+corner(Copy, 11)
+gradient(Copy, Color3.fromRGB(242, 17, 39), Color3.fromRGB(139, 5, 20), 0)
+
+local CopyBorder = stroke(Copy, Color3.fromRGB(255, 83, 99), 1.2, 0.35)
+local CopyInner = frame(Copy, {
+    Position = UDim2.fromOffset(1, 1),
+    Size = UDim2.new(1, -2, 1, -2),
+    BackgroundTransparency = 1,
+    ZIndex = 8,
+})
+corner(CopyInner, 10)
+stroke(CopyInner, Color3.fromRGB(255, 170, 176), 1, 0.88)
+
+local CopyText = label(Copy, "COPY INVITE LINK", {
+    Position = UDim2.new(0, 18, 0, 10),
+    Size = UDim2.new(1, -58, 0, 17),
+    Font = Enum.Font.GothamBold,
+    TextSize = 11,
+    TextColor3 = C.white,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 10,
+})
+
+local CopySubText = label(Copy, "One tap  ·  ready to paste", {
+    Position = UDim2.new(0, 18, 0, 28),
+    Size = UDim2.new(1, -58, 0, 13),
+    Font = Enum.Font.Gotham,
+    TextSize = 8,
+    TextColor3 = Color3.fromRGB(255, 204, 209),
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 10,
+})
+
+local CopyArrow = label(Copy, "›", {
+    AnchorPoint = Vector2.new(1, 0.5),
+    Position = UDim2.new(1, -13, 0.5, -1),
+    Size = UDim2.fromOffset(18, 28),
+    Font = Enum.Font.GothamMedium,
+    TextSize = 26,
+    TextColor3 = Color3.fromRGB(255, 225, 228),
+    TextXAlignment = Enum.TextXAlignment.Center,
+    ZIndex = 10,
+})
+
+local Shine = frame(Copy, {
+    Position = UDim2.new(0, -95, 0, -10),
+    Size = UDim2.fromOffset(45, 78),
+    Rotation = 15,
+    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+    BackgroundTransparency = 0.89,
+    ZIndex = 9,
+})
+
+-- Bottom metadata.
+label(Right, "LINH  /  OFFICIAL", {
+    Position = UDim2.new(0, 28, 1, -33),
+    Size = UDim2.new(0, 160, 0, 16),
+    Font = Enum.Font.Code,
+    TextSize = 8,
+    TextColor3 = C.dim,
+    ZIndex = 7,
+})
+
+label(Right, "v5.0  •  MOBILE READY", {
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -28, 1, -33),
+    Size = UDim2.new(0, 170, 0, 16),
+    Font = Enum.Font.Code,
+    TextSize = 8,
+    TextColor3 = C.dim,
+    TextXAlignment = Enum.TextXAlignment.Right,
+    ZIndex = 7,
+})
+
+-- ───────────────────────── Interactions ────────────────────────────────────
+local copied = false
+
+Copy.MouseEnter:Connect(function()
+    if not copied then
+        tween(Copy, 0.16, {BackgroundColor3 = Color3.fromRGB(247, 23, 45)})
+        tween(CopyBorder, 0.16, {Transparency = 0.04, Thickness = 1.5})
+        tween(CopyArrow, 0.16, {Position = UDim2.new(1, -10, 0.5, -1), TextColor3 = C.white})
+    end
+end)
+
+Copy.MouseLeave:Connect(function()
+    if not copied then
+        tween(Copy, 0.18, {BackgroundColor3 = C.red3})
+        tween(CopyBorder, 0.18, {Transparency = 0.35, Thickness = 1.2})
+        tween(CopyArrow, 0.18, {Position = UDim2.new(1, -13, 0.5, -1), TextColor3 = Color3.fromRGB(255, 225, 228)})
+    end
+end)
+
+Copy.Activated:Connect(function()
+    if copied then return end
+    copied = true
+
+    local clipboardOK = false
+    if type(setclipboard) == "function" then
+        clipboardOK = pcall(setclipboard, DISCORD_URL)
+    elseif type(toclipboard) == "function" then
+        clipboardOK = pcall(toclipboard, DISCORD_URL)
+    end
+
+    if clipboardOK then
+        CopyText.Text = "INVITE COPIED"
+        CopySubText.Text = "Paste it into your browser or Discord"
+        CopyArrow.Text = "›"
+        tween(Copy, 0.18, {
+            BackgroundColor3 = Color3.fromRGB(24, 130, 66)
+        })
+        tween(CopyBorder, 0.18, {Color = Color3.fromRGB(110, 255, 159), Transparency = 0.08})
+    else
+        CopyText.Text = "CLIPBOARD UNAVAILABLE"
+        CopySubText.Text = "Copy manually: discord.gg/MGaTEqY4Ap"
+        CopyArrow.Text = "›"
+        tween(Copy, 0.18, {
+            BackgroundColor3 = Color3.fromRGB(105, 72, 19)
+        })
+        tween(CopyBorder, 0.18, {Color = Color3.fromRGB(255, 204, 112), Transparency = 0.08})
+    end
+
+    task.delay(2.2, function()
+        if not Copy.Parent then return end
+        CopyText.Text = "COPY INVITE LINK"
+        CopySubText.Text = "One tap  ·  ready to paste"
+        CopyArrow.Text = "›"
+        CopyBorder.Color = Color3.fromRGB(255, 83, 99)
+        tween(Copy, 0.18, {BackgroundColor3 = C.red3})
+        tween(CopyBorder, 0.18, {Transparency = 0.35, Thickness = 1.2})
+        copied = false
+    end)
+end)
+
+local closing = false
+local function closeLoader()
+    if closing then return end
+    closing = true
+
+    tween(Card, 0.25, {
+        Position = UDim2.fromScale(0.5, 0.54),
+        BackgroundTransparency = 1,
+    }, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+
+    tween(Shadow, 0.2, {
+        BackgroundTransparency = 1,
+    }, Enum.EasingStyle.Quad)
+
+    tween(Overlay, 0.25, {
+        BackgroundTransparency = 1,
+    }, Enum.EasingStyle.Quad)
+
+    tween(Blur, 0.25, {
+        Size = 0,
+    }, Enum.EasingStyle.Quad)
+
+    task.delay(0.28, function()
+        if Gui.Parent then Gui:Destroy() end
+        if Blur.Parent then Blur:Destroy() end
+    end)
+end
+
+Close.Activated:Connect(closeLoader)
+
+-- ───────────────────────── Entry + ambient animation ───────────────────────
+Card.Position = UDim2.fromScale(0.5, 0.57)
+Card.BackgroundTransparency = 0.15
+Shadow.BackgroundTransparency = 0.65
+
+tween(Overlay, 0.38, {
+    BackgroundTransparency = 0.23,
+}, Enum.EasingStyle.Quad)
+
+tween(Blur, 0.42, {
+    Size = 13,
+}, Enum.EasingStyle.Quad)
+
+tween(Card, 0.52, {
+    Position = UDim2.fromScale(0.5, 0.5),
+    BackgroundTransparency = 0,
+}, Enum.EasingStyle.Back)
+
+tween(Shadow, 0.5, {
+    Position = UDim2.fromScale(0.5, 0.505),
+    BackgroundTransparency = 0.32,
+}, Enum.EasingStyle.Quad)
+
+task.spawn(function()
+    while Gui.Parent and Card.Parent do
+        tween(OutlineTop, 1.8, {
+            BackgroundColor3 = Color3.fromRGB(255, 36, 51)
+        }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+        tween(Aura, 1.8, {
+            BackgroundTransparency = 0.91
+        }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+        task.wait(1.8)
+
+        tween(OutlineTop, 1.8, {
+            BackgroundColor3 = C.red2
+        }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+        tween(Aura, 1.8, {
+            BackgroundTransparency = 0.96
+        }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+        task.wait(1.8)
+    end
+end)
+
+task.spawn(function()
+    task.wait(0.9)
+    while Gui.Parent and Card.Parent do
+        Shine.Position = UDim2.new(0, -65, 0, -12)
+        tween(Shine, 0.72, {
+            Position = UDim2.new(1, 25, 0, -12)
+        }, Enum.EasingStyle.Quad)
+        task.wait(4.2)
+    end
+end)
+
+task.spawn(function()
+    while Gui.Parent and Card.Parent do
+        tween(StatusDot, 1.2, {BackgroundTransparency = 0.55}, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+        task.wait(1.2)
+        tween(StatusDot, 1.2, {BackgroundTransparency = 0}, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+        task.wait(1.2)
+    end
+end)
