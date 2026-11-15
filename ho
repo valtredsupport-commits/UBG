@@ -195,8 +195,13 @@ print("\n\n========== TRACE DUMP ==========")
 print(output)
 print("========== END TRACE ===========")
 
--- Save to file if possible
+-- Copy to clipboard
+pcall(function()
+    setclipboard(output)
+    print("✅ TRACE COPIED TO CLIPBOARD — paste it anywhere")
+end)
+
+-- Also try saving to file
 pcall(function()
     writefile("trace_dump.txt", output)
-    log("TRACER", "saved to workspace/trace_dump.txt")
 end)
