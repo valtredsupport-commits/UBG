@@ -1,0 +1,202 @@
+-- Luraph v14.8 Runtime Tracer for Delta
+-- Hooks the environment, runs the target script, captures every meaningful call.
+-- Output: dumps to Delta's console AND saves to workspace if writefile is available.
+
+local LOG = {}
+local MAX_LOG = 5000
+local DEPTH = 0
+
+local function ts()
+    return string.format("[%.3f]", os.clock())
+end
+
+local function truncate(s, len)
+    len = len or 200
+    s = tostring(s)
+    if #s > len then
+        return s:sub(1, len) .. "...[" .. #s .. " chars]"
+    end
+    return s
+end
+
+local function serialize(v, depth)
+    depth = depth or 0
+    if depth > 3 then return tostring(v) end
+    local t = typeof(v)
+    if t == "string" then
+        return '"' .. truncate(v, 120) .. '"'
+    elseif t == "table" then
+        local parts = {}
+        local count = 0
+        for k, val in pairs(v) do
+            count = count + 1
+            if count > 20 then
+                parts[#parts + 1] = "...+" .. (next(v) and "more" or "")
+                break
+            end
+            parts[#parts + 1] = tostring(k) .. "=" .. serialize(val, depth + 1)
+        end
+        return "{" .. table.concat(parts, ", ") .. "}"
+    elseif t == "Instance" then
+        return v:GetFullName()
+    elseif t == "function" then
+        return "<function>"
+    elseif t == "EnumItem" then
+        return tostring(v)
+    else
+        return tostring(v)
+    end
+end
+
+local function log(category, ...)
+    if #LOG >= MAX_LOG then return end
+    local args = {}
+    for i = 1, select("#", ...) do
+        args[i] = serialize(select(i, ...))
+    end
+    local line = ts() .. " [" .. category .. "] " .. table.concat(args, " | ")
+    LOG[#LOG + 1] = line
+    print(line)
+end
+
+-- Hook namecall (RemoteEvent:FireServer, RemoteFunction:InvokeServer, etc.)
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    local args = {...}
+
+    if method == "FireServer" or method == "InvokeServer" then
+        log("REMOTE", tostring(self:GetFullName()), method, unpack(args))
+    elseif method == "Fire" or method == "Invoke" then
+        log("BINDABLE", tostring(self:GetFullName()), method, unpack(args))
+    end
+
+    return oldNamecall(self, ...)
+end))
+
+-- Hook require
+local oldRequire = require
+local hookedRequire = newcclosure(function(module)
+    log("REQUIRE", typeof(module) == "Instance" and module:GetFullName() or tostring(module))
+    local ok, result = pcall(oldRequire, module)
+    if ok then
+        if typeof(result) == "table" then
+            local keys = {}
+            local count = 0
+            for k, v in pairs(result) do
+                count = count + 1
+                if count > 30 then
+                    keys[#keys + 1] = "...+" .. "more"
+                    break
+                end
+                keys[#keys + 1] = tostring(k) .. ":" .. typeof(v)
+            end
+            log("REQUIRE_RESULT", table.concat(keys, ", "))
+        else
+            log("REQUIRE_RESULT", typeof(result), truncate(tostring(result)))
+        end
+        return result
+    else
+        log("REQUIRE_ERROR", tostring(result))
+        return oldRequire(module)
+    end
+end)
+
+-- Hook getfenv/setfenv to catch environment manipulation
+local oldGetfenv = getfenv
+local oldSetfenv = setfenv
+
+-- Hook HttpService requests
+local HttpService = game:GetService("HttpService")
+local oldRequest = (syn and syn.request) or (http and http.request) or (request) or nil
+if oldRequest then
+    local newRequest = newcclosure(function(opts)
+        log("HTTP", opts.Url or "?", opts.Method or "GET")
+        local result = oldRequest(opts)
+        if result and result.Body then
+            log("HTTP_RESPONSE", result.StatusCode, truncate(result.Body, 300))
+        end
+        return result
+    end)
+    if syn then syn.request = newRequest
+    elseif http then http.request = newRequest
+    elseif request then getgenv().request = newRequest end
+end
+
+-- Hook loadstring
+local oldLoadstring = loadstring
+getgenv().loadstring = newcclosure(function(src, ...)
+    log("LOADSTRING", truncate(src, 500))
+    return oldLoadstring(src, ...)
+end)
+
+-- Hook Instance.new
+local oldInstanceNew = Instance.new
+Instance.new = newcclosure(function(class, parent)
+    if class == "RemoteEvent" or class == "RemoteFunction" or class == "BindableEvent" or class == "BindableFunction" then
+        log("INSTANCE_NEW", class, parent and tostring(parent) or "nil")
+    end
+    return oldInstanceNew(class, parent)
+end)
+
+-- Hook getgenv writes
+local genvProxy = setmetatable({}, {
+    __newindex = function(_, k, v)
+        log("GLOBAL_SET", tostring(k), typeof(v), truncate(tostring(v)))
+        rawset(getgenv(), k, v)
+    end
+})
+
+log("TRACER", "hooks installed, loading target script...")
+
+-- Now load and run the actual obfuscated script
+local targetUrl = "https://raw.githubusercontent.com/BloxifiedHub/gag2/refs/heads/main/lua"
+local ok, src = pcall(function()
+    return game:HttpGet(targetUrl)
+end)
+
+if not ok then
+    log("ERROR", "HttpGet failed: " .. tostring(src))
+    -- Fallback: try request
+    if oldRequest then
+        local resp = oldRequest({Url = targetUrl, Method = "GET"})
+        src = resp.Body
+        ok = src ~= nil
+    end
+end
+
+if ok and src then
+    log("TRACER", "script loaded, " .. #src .. " bytes, executing...")
+
+    -- Replace require in the environment
+    getgenv().require = hookedRequire
+
+    local fn, err = oldLoadstring(src)
+    if fn then
+        local execOk, execErr = pcall(fn)
+        if not execOk then
+            log("EXEC_ERROR", tostring(execErr))
+        else
+            log("TRACER", "execution finished")
+        end
+    else
+        log("PARSE_ERROR", tostring(err))
+    end
+else
+    log("ERROR", "could not fetch script")
+end
+
+-- Dump results
+task.wait(2)
+log("TRACER", "captured " .. #LOG .. " events")
+
+local output = table.concat(LOG, "\n")
+print("\n\n========== TRACE DUMP ==========")
+print(output)
+print("========== END TRACE ===========")
+
+-- Save to file if possible
+pcall(function()
+    writefile("trace_dump.txt", output)
+    log("TRACER", "saved to workspace/trace_dump.txt")
+end)
